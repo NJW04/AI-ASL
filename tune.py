@@ -105,9 +105,11 @@ def main():
         lr = trial.suggest_float("lr", 1e-4, 3e-3, log=True)
         weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
         dropout = trial.suggest_float("dropout", 0.0, 0.4)
-        aug = trial.suggest_categorical("aug", [True, False])
-        size = trial.suggest_categorical("size", [96, 128])
+        aug = trial.suggest_categorical("aug", [True, False]) #????????????
+        size = trial.suggest_categorical("size", [96, 128]) #layer size?
         subset_per_class = trial.suggest_categorical("subset_per_class", [300])
+
+        #num layers, 
 
         # Build train args
         train_args = parse_train_args()
