@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Train script for ASL Alphabet:
-- From-scratch CNN (default) or MobileNetV3-Small head (--model mobilenet [--transfer])
+- From-scratch CNN (configurable blocks/activation)
 - Early stopping on val macro-F1
 - Saves run folder with readable name and all artifacts
 """
@@ -25,6 +25,12 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
+# Import tqdm globally, handle missing case later
+try:
+    import tqdm
+except ImportError:
+    tqdm = None # Define tqdm as None if not installed
+
 from sklearn.metrics import (
     f1_score,
     accuracy_score,
@@ -39,7 +45,7 @@ from data.asl import (
     build_dataloaders,
     summarize_class_distribution,
 )
-from models.cnn_small import CNNSmall
+from models.cnn_small import CNNSmall # Make sure this import is correct
 
 
 # =========================
@@ -157,11 +163,15 @@ def set_seed(seed: int = 42, deterministic: bool = True):
 # Original training logic
 # =========================
 
-def build_model(model_name: str, num_classes: int, dropout: float):
+# --- MODIFIED to accept new args ---
+def build_model(model_name: str, num_classes: int, dropout: float,
+                num_blocks: int = 3, activation: str = "relu"):
     if model_name != "cnn_small":
         raise ValueError("Only cnn_small is supported.")
-    return CNNSmall(num_classes=num_classes, base_channels=32, dropout=dropout)
-
+    # Pass the arguments to the CNNSmall constructor
+    return CNNSmall(num_classes=num_classes, base_channels=32, dropout=dropout,
+                    num_blocks=num_blocks, activation=activation)
+# --- END MODIFICATION ---
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Tuple[float, float, np.ndarray, np.ndarray, List[str], List[str]]:
     model.eval()
@@ -195,9 +205,24 @@ def run_training(args) -> Dict:
     split_json = make_split_lists(args.train_dir, val_ratio=args.val_ratio,
                                   seed=args.seed, subset_per_class=args.subset_per_class)
 
-    slug = f"train-{args.model}_small-lr{args.lr:g}-b{args.batch_size}-ep{args.epochs}"
+    # --- UPDATED SLUG to potentially include new params ---
+    slug_parts = [
+        f"train-{args.model}",
+        f"lr{args.lr:g}",
+        f"b{args.batch_size}",
+        f"bl{args.num_blocks}",
+        f"act-{args.activation}",
+        f"dr{args.dropout:g}",
+        f"ep{args.epochs}"
+    ]
+    if args.aug: slug_parts.append("aug")
+    if args.size != 96: slug_parts.append(f"sz{args.size}")
+    if args.subset_per_class: slug_parts.append(f"sub{args.subset_per_class}")
+    slug = "_".join(slug_parts)
+    # --- END UPDATE ---
+
     run_dir = create_run_dir(Path(args.artifacts_root), slug)
-    ensure_dir(run_dir)
+    _ensure_dir(run_dir)
     logger = get_logger(run_dir)
     log_banner(logger, "TRAIN")
 
@@ -212,11 +237,16 @@ def run_training(args) -> Dict:
     )
     write_json({c: i for i, c in enumerate(class_names)}, run_dir / "class_indices.json")
 
-    model = build_model(args.model, num_classes=len(class_names), dropout=args.dropout)
+    # --- MODIFIED to pass new args ---
+    model = build_model(args.model, num_classes=len(class_names), dropout=args.dropout,
+                        num_blocks=args.num_blocks, activation=args.activation)
+    # --- END MODIFICATION ---
+
     device = torch.device("cuda" if torch.cuda.is_available() else
                           ("mps" if torch.backends.mps.is_available() else "cpu"))
     model.to(device)
-    logger.info("Model: %s", model.__class__.__name__)
+    logger.info("Model: %s (blocks=%d, act=%s)",
+                model.__class__.__name__, args.num_blocks, args.activation) # Updated log
     logger.info("Device: %s", device)
 
     class_weights = None
@@ -241,11 +271,16 @@ def run_training(args) -> Dict:
     best = {"macro_f1": -1.0, "epoch": -1}
     patience_counter = 0
 
+    # Define a dummy tqdm class if tqdm is not installed
+    tqdm_iterator = tqdm.tqdm if tqdm else lambda x, **kwargs: x
+
     for epoch in range(1, args.epochs + 1):
         logger.info("Epoch %d/%d", epoch, args.epochs)
         model.train()
         total, correct, total_loss = 0, 0, 0.0
-        for x, y, _ in train_loader:
+        # Simple progress bar for training
+        pbar = tqdm_iterator(train_loader, desc=f"Epoch {epoch} Train", leave=False)
+        for x, y, _ in pbar:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
@@ -257,6 +292,11 @@ def run_training(args) -> Dict:
             pred = logits.argmax(dim=1)
             correct += int((pred == y).sum().item())
             total += x.size(0)
+            # Update progress bar description (only if tqdm exists)
+            if tqdm:
+                pbar.set_postfix({"loss": f"{total_loss / total:.4f}", "acc": f"{correct / total:.4f}"})
+        if tqdm: pbar.close() # Close progress bar if tqdm exists
+
         train_loss = total_loss / max(1, total)
         train_acc = correct / max(1, total)
 
@@ -289,15 +329,22 @@ def run_training(args) -> Dict:
     train_csv.close()
     val_csv.close()
 
+    # --- UPDATED CONFIG SAVING ---
     cfg = vars(args).copy()
-    cfg["split_json"] = str(Path("splits") / f"asl_val_split_seed{args.seed}_r{int(args.val_ratio*100)}.json")
+    # Convert Path objects to strings for JSON
+    for k, v in cfg.items():
+        if isinstance(v, Path):
+            cfg[k] = str(v)
+    cfg["split_json"] = str(split_json) # Ensure split_json path is saved
     write_json(cfg, run_dir / "config.json")
+    # --- END UPDATE ---
 
     logger.info("Training completed. Artifacts at: %s", run_dir)
     return {"run_dir": str(run_dir), "best_macro_f1": best["macro_f1"], "best_epoch": best["epoch"]}
 
 
-def parse_args():
+# --- MODIFIED to accept args_list ---
+def parse_args(args_list=None): # Add args_list=None
     ap = argparse.ArgumentParser(description="Train a CNN for ASL Alphabet (29 classes)")
     ap.add_argument("--train-dir", type=Path, default=Path("data/asl_alphabet_train"))
     ap.add_argument("--test-dir", type=Path, default=Path("data/asl_alphabet_test"))
@@ -314,12 +361,30 @@ def parse_args():
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--class-weights", action="store_true")
     ap.add_argument("--dropout", type=float, default=0.3)
+
+    # --- ADDED NEW ARGUMENTS ---
+    ap.add_argument("--num-blocks", type=int, default=3, help="Number of conv blocks in CNNSmall")
+    ap.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
+    # --- END OF NEW ARGUMENTS ---
+
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--use-kaggle", action="store_true")
     ap.add_argument("--artifacts-root", type=Path, default=Path("artifacts/asl_runs"))
-    return ap.parse_args()
 
+    # Pass the list to the internal parse_args method
+    return ap.parse_args(args_list)
+# --- END MODIFICATION ---
 
 if __name__ == "__main__":
-    args = parse_args()
+    # Check if tqdm is available before using it
+    if tqdm is None:
+        print("tqdm not found, install it for progress bars: pip install tqdm")
+        # Define a dummy tqdm class if not installed
+        class tqdm:
+            def __init__(self, iterable=None, *args, **kwargs): self.iterable = iterable
+            def __iter__(self): return iter(self.iterable)
+            def set_postfix(self, *args, **kwargs): pass
+            def close(self): pass
+
+    args = parse_args() # Parses command-line args when run directly
     run_training(args)
