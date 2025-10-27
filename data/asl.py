@@ -13,19 +13,70 @@ import os
 import random
 import re
 import subprocess
-from collections import defaultdict, Counter
+import logging
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PIL import Image
+from PIL import Image  # noqa: F401 (used indirectly by default_loader)
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets.folder import default_loader
 
 from .transforms import get_train_transforms, get_eval_transforms
-from utils.io import ensure_dir, write_json
-from utils.log import get_logger, log_banner
+
+# =========================
+# Inlined utility helpers
+# =========================
+
+def ensure_dir(path: Path):
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def write_json(data: Dict, path: Path, indent: int = 2):
+    path = Path(path)
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=indent)
+
+def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.Logger:
+    """
+    Logger writing to console and <run_dir>/run.log (if run_dir is writable).
+    Prevents duplicate handlers for the same run_dir/name.
+    """
+    run_dir = Path(run_dir)
+    try:
+        ensure_dir(run_dir)
+        logfile = run_dir / "run.log"
+    except Exception:
+        logfile = None  # fallback to console-only if path invalid
+
+    logger_name = f"{run_dir.resolve()}/{name}"
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+    logger.propagate = False
+
+    if not logger.handlers:
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%H:%M:%S"))
+        logger.addHandler(ch)
+
+        if logfile is not None:
+            try:
+                fh = logging.FileHandler(logfile, mode="a", encoding="utf-8")
+                fh.setLevel(level)
+                fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
+                logger.addHandler(fh)
+            except Exception:
+                # If file handler fails (e.g., permissions), we still have console logging
+                pass
+
+    return logger
+
+def log_banner(logger: logging.Logger, title: str):
+    line = "=" * (len(title) + 4)
+    logger.info("\n%s\n| %s |\n%s", line, title, line)
 
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}

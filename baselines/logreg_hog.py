@@ -10,23 +10,85 @@ from __future__ import annotations
 
 import argparse
 import pickle
-from collections import Counter
+import json
+import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 import numpy as np
 from PIL import Image
+import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
 
 from data.asl import ensure_data, make_split_lists, summarize_class_distribution
 from data.transforms import extract_hog_color
-from utils.io import write_json, ensure_dir
-from utils.log import get_logger, log_banner
-from utils.metrics import plot_confusion
 
+
+
+def ensure_dir(path: Path):
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def write_json(data: Dict[str, Any], path: Path, indent: int = 2):
+    path = Path(path)
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=indent)
+
+def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.Logger:
+    """
+    Logger writing to console and <run_dir>/run.log.
+    Prevents duplicate handlers for the same run_dir/name.
+    """
+    run_dir = Path(run_dir)
+    ensure_dir(run_dir)
+    logger_name = f"{run_dir.resolve()}/{name}"
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+    logger.propagate = False
+
+    if not logger.handlers:
+        # console
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%H:%M:%S"))
+        logger.addHandler(ch)
+
+        # file
+        fh = logging.FileHandler(run_dir / "run.log", mode="a", encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(fh)
+
+    return logger
+
+def log_banner(logger: logging.Logger, title: str):
+    line = "=" * (len(title) + 4)
+    logger.info("\n%s\n| %s |\n%s", line, title, line)
+
+def _save_figure(out_path: Path, dpi: int = 160):
+    out_path = Path(out_path)
+    ensure_dir(out_path.parent)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close()
+
+def plot_confusion(y_true: np.ndarray, y_pred: np.ndarray, labels: List[str], out_path: Path, title: str):
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(labels))))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    fig, ax = plt.subplots(figsize=(10, 10))
+    disp.plot(include_values=False, cmap="Blues", ax=ax, colorbar=True, xticks_rotation=90)
+    ax.set_title(title)
+    fig.tight_layout()
+    _save_figure(out_path)
+
+
+# =========================
+# Original baseline logic
+# =========================
 
 def _extract_feature_vec(img_path: str) -> np.ndarray:
     img = Image.open(img_path).convert("RGB")
@@ -34,7 +96,6 @@ def _extract_feature_vec(img_path: str) -> np.ndarray:
 
 
 def _load_split(split_json: Path):
-    import json
     with open(split_json, "r") as f:
         d = json.load(f)
     class_names = d["class_names"]
@@ -46,7 +107,7 @@ def _load_split(split_json: Path):
 
 def _load_test_items(test_dir: Path, class_names: List[str]):
     # Accept either foldered or flat test dir (best effort)
-    from data.asl import _build_test_items
+    from data.asl import _build_test_items  # reuse dataset helper
     items = _build_test_items(test_dir, class_names)
     return [(it.path, it.label) for it in items]
 
@@ -84,9 +145,9 @@ def main():
     ap.add_argument("--artifacts-root", type=Path, default=Path("artifacts/asl_runs"))
     args = ap.parse_args()
 
-    run_dir = Path(args.artifacts_root) / __import__("time").strftime("%Y-%m-%d_%H%M") / "baseline-logreg"
-    # Human-friendly single folder (per requirements)
-    run_dir = Path(args.artifacts_root) / (__import__("time").strftime("%Y-%m-%d_%H%M") + "-baseline-logreg")
+    # Human-friendly single folder name, no nested subfolders
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+    run_dir = Path(args.artifacts_root) / f"{ts}-baseline-logreg"
     ensure_dir(run_dir)
     logger = get_logger(run_dir)
     log_banner(logger, "BASELINE: LOGISTIC REGRESSION (HOG + COLOR)")

@@ -11,23 +11,152 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
+import datetime as _dt
+import shutil
+import random
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
 
-from data.asl import ensure_data, make_split_lists, build_dataloaders, summarize_class_distribution
+from sklearn.metrics import (
+    f1_score,
+    accuracy_score,
+    recall_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+)
+
+from data.asl import (
+    ensure_data,
+    make_split_lists,
+    build_dataloaders,
+    summarize_class_distribution,
+)
 from models.cnn_small import CNNSmall
 from models.mobilenet_head import MobileNetV3SmallHead
-from utils.io import create_run_dir, write_json, ensure_dir, copy_to
-from utils.log import get_logger, log_banner
-from utils.metrics import compute_metrics, plot_confusion
-from utils.seed import set_seed
 
+
+# =========================
+# Inlined utility helpers
+# =========================
+
+# ---- io helpers ----
+def _ensure_dir(path: Path):
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def _slugify(text: str) -> str:
+    s = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in text.strip().lower())
+    while "--" in s:
+        s = s.replace("--", "-")
+    return s.strip("-")
+
+def _timestamp_slug(slug: str) -> str:
+    ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{ts}__{_slugify(slug)}" if slug else ts
+
+def create_run_dir(artifacts_root: Path, slug: str) -> Path:
+    """
+    Create a timestamped run directory under artifacts_root.
+    Example: artifacts/asl_runs/2025-10-27_14-05-33__train-cnn_small-lr0.001-b64-ep15
+    """
+    run_dir = Path(artifacts_root) / _timestamp_slug(slug)
+    _ensure_dir(run_dir)
+    return run_dir
+
+def write_json(data: Dict[str, Any], path: Path, indent: int = 2):
+    path = Path(path)
+    _ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=indent)
+
+def copy_to(src: Path, dst: Path):
+    dst = Path(dst)
+    _ensure_dir(dst.parent)
+    shutil.copy2(src, dst)
+
+# ---- logging helpers ----
+def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.Logger:
+    """
+    Logger writing to console and <run_dir>/run.log.
+    Prevents duplicate handlers for the same run_dir/name.
+    """
+    run_dir = Path(run_dir)
+    _ensure_dir(run_dir)
+    logger_name = f"{run_dir.resolve()}/{name}"
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+    logger.propagate = False
+
+    if not logger.handlers:
+        # console
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%H:%M:%S"))
+        logger.addHandler(ch)
+
+        # file
+        fh = logging.FileHandler(run_dir / "run.log", mode="a", encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(fh)
+
+    return logger
+
+def log_banner(logger: logging.Logger, title: str):
+    line = "=" * (len(title) + 4)
+    logger.info("\n%s\n| %s |\n%s", line, title, line)
+
+# ---- metrics & plotting ----
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, labels: List[str]) -> Dict[str, Any]:
+    acc = float(accuracy_score(y_true, y_pred))
+    macro_f1 = float(f1_score(y_true, y_pred, average="macro"))
+    per_class_rec = recall_score(y_true, y_pred, average=None).tolist()
+    return {
+        "accuracy": acc,
+        "macro_f1": macro_f1,
+        "per_class_recall": per_class_rec,
+        "labels": labels,
+    }
+
+def _save_figure(out_path: Path, dpi: int = 160):
+    out_path = Path(out_path)
+    _ensure_dir(out_path.parent)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close()
+
+def plot_confusion(y_true: np.ndarray, y_pred: np.ndarray, labels: List[str], out_path: Path, title: str):
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(labels))))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    fig, ax = plt.subplots(figsize=(10, 10))
+    disp.plot(include_values=False, cmap="Blues", ax=ax, colorbar=True, xticks_rotation=90)
+    ax.set_title(title)
+    fig.tight_layout()
+    _save_figure(out_path)
+
+# ---- seeding ----
+def set_seed(seed: int = 42, deterministic: bool = True):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
+
+
+# =========================
+# Original training logic
+# =========================
 
 def build_model(model_name: str, num_classes: int, dropout: float, transfer: bool):
     if model_name == "cnn_small":
@@ -76,7 +205,7 @@ def run_training(args) -> Dict:
     # Create run dir
     slug = f"train-{args.model}_small-lr{args.lr:g}-b{args.batch_size}-ep{args.epochs}"
     run_dir = create_run_dir(Path(args.artifacts_root), slug)
-    ensure_dir(run_dir)
+    _ensure_dir(run_dir)
     logger = get_logger(run_dir)
     log_banner(logger, "TRAIN")
 

@@ -9,20 +9,80 @@ Search space:
 - base channels {32} (fixed in CNNSmall, keep simple)
 - aug {on,off}
 - size {96,128}
-- subset_per_class {None, 500}
+- subset_per_class {300}
 Optimizes val macro-F1 using the training loop (with fewer epochs by default).
 """
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import json
+import logging
+from pathlib import Path
+from typing import Any
+import datetime as _dt
+
 import optuna
 
 from train import run_training, parse_args as parse_train_args
-from utils.io import create_run_dir, write_json, ensure_dir
-from utils.log import get_logger, log_banner
 
+
+# =========================
+# Inlined utility helpers
+# =========================
+
+def _ensure_dir(path: Path):
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def _slugify(text: str) -> str:
+    s = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in text.strip().lower())
+    while "--" in s:
+        s = s.replace("--", "-")
+    return s.strip("-")
+
+def _timestamp_slug(slug: str) -> str:
+    ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{ts}__{_slugify(slug)}" if slug else ts
+
+def create_run_dir(artifacts_root: Path, slug: str) -> Path:
+    run_dir = Path(artifacts_root) / _timestamp_slug(slug)
+    _ensure_dir(run_dir)
+    return run_dir
+
+def write_json(data: dict[str, Any], path: Path, indent: int = 2):
+    path = Path(path)
+    _ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=indent)
+
+def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.Logger:
+    run_dir = Path(run_dir)
+    _ensure_dir(run_dir)
+    logger_name = f"{run_dir.resolve()}/{name}"
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+    logger.propagate = False
+
+    if not logger.handlers:
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%H:%M:%S"))
+        logger.addHandler(ch)
+
+        fh = logging.FileHandler(run_dir / "run.log", mode="a", encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(fh)
+
+    return logger
+
+def log_banner(logger: logging.Logger, title: str):
+    line = "=" * (len(title) + 4)
+    logger.info("\n%s\n| %s |\n%s", line, title, line)
+
+
+# =========================
+# Tuning script
+# =========================
 
 def main():
     ap = argparse.ArgumentParser(description="Hyperparameter tuning with Optuna")
@@ -63,9 +123,8 @@ def main():
         train_args.model = "cnn_small"
         train_args.transfer = False
         train_args.seed = args.seed
-        from utils.io import ensure_dir
         train_args.artifacts_root = Path(args.artifacts_root) / "hp-tuning"
-        ensure_dir(train_args.artifacts_root)
+        _ensure_dir(train_args.artifacts_root)
 
         res = run_training(train_args)
         macro_f1 = float(res["best_macro_f1"])
