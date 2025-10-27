@@ -40,7 +40,6 @@ from data.asl import (
     summarize_class_distribution,
 )
 from models.cnn_small import CNNSmall
-from models.mobilenet_head import MobileNetV3SmallHead
 
 
 # =========================
@@ -158,13 +157,10 @@ def set_seed(seed: int = 42, deterministic: bool = True):
 # Original training logic
 # =========================
 
-def build_model(model_name: str, num_classes: int, dropout: float, transfer: bool):
-    if model_name == "cnn_small":
-        return CNNSmall(num_classes=num_classes, base_channels=32, dropout=dropout)
-    elif model_name == "mobilenet":
-        return MobileNetV3SmallHead(num_classes=num_classes, transfer=transfer)
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
+def build_model(model_name: str, num_classes: int, dropout: float):
+    if model_name != "cnn_small":
+        raise ValueError("Only cnn_small is supported.")
+    return CNNSmall(num_classes=num_classes, base_channels=32, dropout=dropout)
 
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Tuple[float, float, np.ndarray, np.ndarray, List[str], List[str]]:
@@ -192,51 +188,39 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Tupl
 def run_training(args) -> Dict:
     set_seed(args.seed, deterministic=True)
 
-    # Route any torchvision cache away from ~/.cache to artifacts (to satisfy "no .cache" usage)
     os.environ.setdefault("TORCH_HOME", str(Path(args.artifacts_root) / "torch_home"))
 
-    # Ensure data present and class mapping
     train_dir, test_dir = ensure_data(Path("data"), use_kaggle=args.use_kaggle)
 
-    # Create split
     split_json = make_split_lists(args.train_dir, val_ratio=args.val_ratio,
                                   seed=args.seed, subset_per_class=args.subset_per_class)
 
-    # Create run dir
     slug = f"train-{args.model}_small-lr{args.lr:g}-b{args.batch_size}-ep{args.epochs}"
     run_dir = create_run_dir(Path(args.artifacts_root), slug)
-    _ensure_dir(run_dir)
+    ensure_dir(run_dir)
     logger = get_logger(run_dir)
     log_banner(logger, "TRAIN")
 
-    # Summaries
     dist = summarize_class_distribution(split_json)
     logger.info("Args: %s", vars(args))
     logger.info("Class distribution (train): %s", dist["train"])
     logger.info("Class distribution (val):   %s", dist["val"])
 
-    # Dataloaders
     train_loader, val_loader, test_loader, class_names = build_dataloaders(
         args.train_dir, args.test_dir, split_json, batch_size=args.batch_size,
         num_workers=args.num_workers, size=args.size, aug=args.aug
     )
     write_json({c: i for i, c in enumerate(class_names)}, run_dir / "class_indices.json")
 
-    # Model
-    model = build_model(args.model, num_classes=len(class_names), dropout=args.dropout, transfer=args.transfer)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_model(args.model, num_classes=len(class_names), dropout=args.dropout)
+    device = torch.device("cuda" if torch.cuda.is_available() else
+                          ("mps" if torch.backends.mps.is_available() else "cpu"))
     model.to(device)
     logger.info("Model: %s", model.__class__.__name__)
     logger.info("Device: %s", device)
 
-    if args.model == "mobilenet" and args.transfer and hasattr(model, "freeze_backbone"):
-        model.freeze_backbone(True)
-        logger.info("Backbone frozen for first %d epoch(s).", args.freeze_backbone_epochs)
-
-    # Class weights (optional)
     class_weights = None
     if args.class_weights:
-        # Count from training data
         labels = []
         for _, y, _ in train_loader:
             labels.extend(y.tolist())
@@ -249,7 +233,6 @@ def run_training(args) -> Dict:
     optimizer = Adam([p for p in model.parameters() if p.requires_grad],
                      lr=args.lr, weight_decay=args.weight_decay)
 
-    # Logs
     train_csv = (run_dir / "train_log.csv").open("w")
     val_csv = (run_dir / "val_log.csv").open("w")
     print("epoch,train_loss,train_acc,val_loss,val_acc,val_macro_f1", file=train_csv)
@@ -277,15 +260,6 @@ def run_training(args) -> Dict:
         train_loss = total_loss / max(1, total)
         train_acc = correct / max(1, total)
 
-        # Unfreeze after freeze_backbone_epochs (if applicable)
-        if args.model == "mobilenet" and args.transfer and epoch == args.freeze_backbone_epochs and hasattr(model, "freeze_backbone"):
-            model.freeze_backbone(False)
-            # Recreate optimizer to include new params if any
-            optimizer = Adam([p for p in model.parameters() if p.requires_grad],
-                             lr=args.lr, weight_decay=args.weight_decay)
-            logger.info("Backbone unfrozen.")
-
-        # Validation
         val_loss, _, y_true, y_pred, _, _ = evaluate(model, val_loader, device)
         metrics = compute_metrics(y_true, y_pred, class_names)
         val_acc, val_macro_f1 = metrics["accuracy"], metrics["macro_f1"]
@@ -297,13 +271,10 @@ def run_training(args) -> Dict:
         train_csv.flush()
         val_csv.flush()
 
-        # Early stopping on macro-F1
         if val_macro_f1 > best["macro_f1"]:
             best.update({"macro_f1": val_macro_f1, "epoch": epoch})
-            # Save best
             torch.save(model.state_dict(), run_dir / "best.pt")
             write_json({"epoch": epoch, "macro_f1": val_macro_f1}, run_dir / "best.json")
-            # Confusion matrix for val
             plot_confusion(y_true, y_pred, class_names, out_path=run_dir / "confmat_val.png",
                            title=f"Val Confusion (epoch {epoch})")
             patience_counter = 0
@@ -318,7 +289,6 @@ def run_training(args) -> Dict:
     train_csv.close()
     val_csv.close()
 
-    # Save final metadata
     cfg = vars(args).copy()
     cfg["split_json"] = str(Path("splits") / f"asl_val_split_seed{args.seed}_r{int(args.val_ratio*100)}.json")
     write_json(cfg, run_dir / "config.json")
@@ -338,10 +308,8 @@ def parse_args():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--patience", type=int, default=5)
-    ap.add_argument("--model", type=str, choices=["cnn_small", "mobilenet"], default="cnn_small")
-    ap.add_argument("--transfer", action="store_true", help="Use pretrained weights (mobilenet only)")
-    ap.add_argument("--freeze-backbone-epochs", type=int, default=3, help="Epochs to freeze backbone when --transfer")
-    ap.add_argument("--aug", action="store_true", help="Enable data augmentation")
+    ap.add_argument("--model", type=str, choices=["cnn_small"], default="cnn_small")
+    ap.add_argument("--aug", action="store_true")
     ap.add_argument("--size", type=int, default=96)
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--class-weights", action="store_true")

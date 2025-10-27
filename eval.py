@@ -32,7 +32,6 @@ from sklearn.metrics import (
 
 from data.asl import build_dataloaders
 from models.cnn_small import CNNSmall
-from models.mobilenet_head import MobileNetV3SmallHead
 
 
 # =========================
@@ -142,8 +141,6 @@ def _infer_model_type(checkpoint_path: Path) -> str:
 
 
 def _build_model(model_name: str, num_classes: int):
-    if model_name == "mobilenet":
-        return MobileNetV3SmallHead(num_classes=num_classes, transfer=False)
     return CNNSmall(num_classes=num_classes, base_channels=32, dropout=0.3)
 
 
