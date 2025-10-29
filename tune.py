@@ -30,9 +30,6 @@ import optuna
 from train import run_training, parse_args as parse_train_args
 
 
-# =========================
-# Inlined utility helpers
-# =========================
 def _ensure_dir(path: Path):
     """Create directory (and parents) if it does not exist."""
     Path(path).mkdir(parents=True, exist_ok=True)

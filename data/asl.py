@@ -1,5 +1,12 @@
+"""
+ASL Alphabet dataset utilities.
+
+Includes:
+- ensure_data: optional Kaggle download and structure validation
+- make_split_lists: stratified train/val/test split using index files (no file moves)
+- build_dataloaders: DataLoaders for train/val/test with torchvision transforms
+"""
 from __future__ import annotations
-"""ASL dataset utilities: data ensuring, splits, datasets, and dataloaders."""
 
 import json
 import os
@@ -12,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PIL import Image
+from PIL import Image  # noqa: F401 (used indirectly by default_loader)
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets.folder import default_loader
@@ -26,7 +33,7 @@ def ensure_dir(path: Path):
 
 
 def write_json(data: Dict, path: Path, indent: int = 2):
-    """Write a Python object as JSON to ``path`` with the given indentation."""
+    """Write dict ``data`` to ``path`` as JSON."""
     path = Path(path)
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as f:
@@ -34,30 +41,13 @@ def write_json(data: Dict, path: Path, indent: int = 2):
 
 
 def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.Logger:
-    """Create a logger that logs to console and ``<run_dir>/run.log`` if writable.
-
-    Prevents duplicate handlers for the same ``run_dir``/``name`` combination.
-
-    Parameters
-    ----------
-    run_dir : Path
-        Directory to write the log file into.
-    name : str
-        Logger name suffix.
-    level : int
-        Logging level (e.g., ``logging.INFO``).
-
-    Returns
-    -------
-    logging.Logger
-        Configured logger instance.
-    """
+    """Return a logger that writes to console and, if possible, to ``<run_dir>/run.log``."""
     run_dir = Path(run_dir)
     try:
         ensure_dir(run_dir)
         logfile = run_dir / "run.log"
     except Exception:
-        logfile = None
+        logfile = None  # fallback to console-only if path invalid
 
     logger_name = f"{run_dir.resolve()}/{name}"
     logger = logging.getLogger(logger_name)
@@ -77,13 +67,14 @@ def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.
                 fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
                 logger.addHandler(fh)
             except Exception:
+                # If file handler fails (e.g., permissions), we still have console logging
                 pass
 
     return logger
 
 
 def log_banner(logger: logging.Logger, title: str):
-    """Log a formatted banner with the provided title."""
+    """Log a banner-style section heading."""
     line = "=" * (len(title) + 4)
     logger.info("\n%s\n| %s |\n%s", line, title, line)
 
@@ -92,7 +83,7 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def _is_image(p: Path) -> bool:
-    """Return True if ``p`` is a file with a known image extension."""
+    """Return True if ``p`` is a file with an allowed image extension."""
     return p.is_file() and p.suffix.lower() in IMG_EXTS
 
 
@@ -102,30 +93,19 @@ def ensure_data(
     kaggle_dataset: str = "grassknoted/asl-alphabet",
     logger=None,
 ) -> Tuple[Path, Path]:
-    """Ensure the ASL dataset exists under ``root_dir``; optionally download via Kaggle.
+    """Ensure the ASL dataset is present and write class indices.
 
-    Expects the following structure:
-      ``./data/asl_alphabet_train/`` (29 subfolders)
-      ``./data/asl_alphabet_test/``
+    Expects:
+        ./data/asl_alphabet_train/ (29 subfolders)
+        ./data/asl_alphabet_test/
 
-    Also writes ``./data/class_indices.json`` mapping class name -> index based on
-    train subfolder names.
+    If ``use_kaggle`` is True, attempts a Kaggle CLI download/unzip into ``root_dir``.
 
-    Parameters
-    ----------
-    root_dir : Path
-        Dataset root directory (e.g., ``./data``).
-    use_kaggle : bool
-        Whether to attempt Kaggle CLI download/unzip.
-    kaggle_dataset : str
-        Kaggle dataset identifier.
-    logger : logging.Logger | None
-        Logger for progress messages. If ``None``, a new one is created.
+    Returns:
+        (train_dir, test_dir)
 
-    Returns
-    -------
-    (Path, Path)
-        Tuple of (``train_dir``, ``test_dir``).
+    Also writes ``./data/class_indices.json`` mapping class name -> index derived
+    from the train directory structure (subfolder names).
     """
     root_dir = Path(root_dir)
     ensure_dir(root_dir)
@@ -137,15 +117,18 @@ def ensure_data(
 
     if use_kaggle and (not train_dir.exists() or not test_dir.exists()):
         logger.info("Attempting Kaggle download (dataset: %s)...", kaggle_dataset)
+        # Users must provide Kaggle token. We just invoke CLI.
         try:
             cmd = ["kaggle", "datasets", "download", "-d", kaggle_dataset, "-p", str(root_dir)]
             subprocess.run(cmd, check=True)
+            # Unzip the largest zip in root_dir (dataset)
             zips = sorted(root_dir.glob("*.zip"), key=lambda p: p.stat().st_size, reverse=True)
             if not zips:
                 raise RuntimeError("No zip file found after kaggle download.")
             zip_path = zips[0]
             logger.info("Unzipping %s ...", zip_path.name)
             subprocess.run(["unzip", "-q", "-o", str(zip_path), "-d", str(root_dir)], check=True)
+            # Try to identify train/test directories if nested
             candidates = list(root_dir.rglob("asl_alphabet_train"))
             if candidates:
                 src_train = candidates[0]
@@ -165,6 +148,7 @@ def ensure_data(
         except subprocess.CalledProcessError as e:
             logger.error("Kaggle download/unzip failed: %s", e)
 
+    # Validate structure
     if not train_dir.exists():
         raise FileNotFoundError(
             f"Training folder not found at {train_dir}. "
@@ -185,7 +169,7 @@ def ensure_data(
 
 
 def _list_images_per_class(train_dir: Path) -> Dict[str, List[Path]]:
-    """Return a mapping from class name to a sorted list of image Paths."""
+    """Return dict of class_name -> list of image paths (recursive)."""
     per_class: Dict[str, List[Path]] = {}
     for cdir in sorted([p for p in Path(train_dir).iterdir() if p.is_dir()]):
         imgs = [p for p in cdir.rglob("*") if _is_image(p)]
@@ -201,31 +185,14 @@ def make_split_lists(
     seed: int = 42,
     subset_per_class: Optional[int] = None,
 ) -> Path:
-    """Create stratified train/val/test JSON split lists without moving files.
+    """Build stratified train/val/test lists (no file moves) and write a split JSON.
 
     Saves to:
-    ``./splits/asl_split_s{seed}_v{val*100}_t{test*100}.json``
+        ./splits/asl_split_s{seed}_v{val*100}_t{test*100}.json
 
-    If ``subset_per_class`` is provided, subsets train and val per-class after
-    stratification; test is never subsetted.
-
-    Parameters
-    ----------
-    train_dir : Path
-        Path to the training directory with class subfolders.
-    val_ratio : float
-        Fraction of each class to use for validation.
-    test_ratio : float
-        Fraction of each class to use for test.
-    seed : int
-        Random seed for shuffling.
-    subset_per_class : Optional[int]
-        Max number of samples per class for train/val after split.
-
-    Returns
-    -------
-    Path
-        Path to the written split JSON file.
+    If ``subset_per_class`` is set, samples up to N examples per class **after**
+    stratification (applied independently on train and val). The test set is never
+    subsetted.
     """
     train_dir = Path(train_dir)
     assert train_dir.exists(), f"{train_dir} does not exist."
@@ -245,16 +212,19 @@ def make_split_lists(
         random.shuffle(imgs)
         n = len(imgs)
 
-        n_test = max(1, int(round(n * test_ratio)))
-        n_val = max(1, int(round(n * val_ratio)))
+        # Calculate split indices
+        n_test = int(round(n * test_ratio))
+        n_val = int(round(n * val_ratio))
 
+        # Carve out the lists
         test_imgs = imgs[:n_test]
-        val_imgs = imgs[n_test: n_test + n_val]
-        train_imgs = imgs[n_test + n_val:]
+        val_imgs = imgs[n_test : n_test + n_val]
+        train_imgs = imgs[n_test + n_val :]
 
+        # Optional subsetting (test is NEVER subsetted)
         if subset_per_class is not None:
             train_imgs = train_imgs[:subset_per_class]
-            val_imgs = val_imgs[:min(len(val_imgs), subset_per_class)]
+            val_imgs = val_imgs[: min(len(val_imgs), subset_per_class)]
 
         for p in train_imgs:
             train_list.append({"path": str(p), "label": cls})
@@ -281,25 +251,23 @@ def make_split_lists(
 
 @dataclass
 class Item:
-    """Single dataset record with path and integer label."""
+    """Simple record for a dataset item."""
+
     path: str
     label: int
 
 
 class ASLPathsDataset(Dataset):
-    """Dataset that loads images from stored file paths with optional transforms."""
+    """Dataset that loads images by file path and returns (image, label, path)."""
 
     def __init__(self, items: Sequence[Item], transform=None):
-        """Initialize with a sequence of ``Item`` and an optional transform."""
         self.items = list(items)
         self.transform = transform
 
     def __len__(self):
-        """Return dataset size."""
         return len(self.items)
 
     def __getitem__(self, idx):
-        """Load and return ``(image, label, path)`` for index ``idx``."""
         it = self.items[idx]
         img = default_loader(it.path)  # PIL
         if self.transform is not None:
@@ -307,14 +275,18 @@ class ASLPathsDataset(Dataset):
         return img, it.label, it.path
 
 
-def _load_split_items_from_data(split_data: Dict, phase: str, class_to_idx: Dict[str, int]) -> List[Item]:
-    """Load items for ``phase`` (train/val/test) from an in-memory split dict."""
+def _load_split_items_from_data(
+    split_data: Dict, phase: str, class_to_idx: Dict[str, int]
+) -> List[Item]:
+    """Load a list of ``Item`` from a pre-loaded split dict for a given phase."""
     items: List[Item] = []
     if phase not in split_data:
-        return []
+        return []  # Return empty list if phase (e.g., "test") doesn't exist
+
     for rec in split_data[phase]:
         p = Path(rec["path"])
         if not p.exists():
+            # Skip missing
             continue
         label_idx = class_to_idx[rec["label"]]
         items.append(Item(path=str(p), label=label_idx))
@@ -322,11 +294,12 @@ def _load_split_items_from_data(split_data: Dict, phase: str, class_to_idx: Dict
 
 
 def _infer_label_from_name(path: Path, classes: Sequence[str]) -> Optional[str]:
-    """Infer a class label from a filename by substring/token match, if possible."""
+    """Best effort: infer label from filename (substring match against class names)."""
     name = path.stem.lower()
     for cls in classes:
         if cls.lower() in name:
             return cls
+    # Also consider first token before non-letters
     m = re.split(r"[^A-Za-z]+", path.stem)
     if m:
         token = m[0].upper()
@@ -336,13 +309,14 @@ def _infer_label_from_name(path: Path, classes: Sequence[str]) -> Optional[str]:
 
 
 def _build_test_items(test_dir: Path, classes: Sequence[str]) -> List[Item]:
-    """Fallback loader for test items from ``test_dir`` if split JSON lacks 'test'."""
+    """Fallback: build test items from a physical ``test_dir`` (foldered or flat)."""
     class_to_idx = {c: i for i, c in enumerate(classes)}
     items: List[Item] = []
     if not test_dir.exists():
         return []
 
     if any(p.is_dir() for p in test_dir.iterdir()):
+        # Foldered test set
         for cdir in sorted([p for p in test_dir.iterdir() if p.is_dir()]):
             label = cdir.name
             if label not in class_to_idx:
@@ -351,9 +325,11 @@ def _build_test_items(test_dir: Path, classes: Sequence[str]) -> List[Item]:
                 if _is_image(p):
                     items.append(Item(path=str(p), label=class_to_idx[label]))
     else:
+        # Flat images, try to infer labels from names
         for p in sorted([p for p in test_dir.iterdir() if _is_image(p)]):
             maybe = _infer_label_from_name(p, classes)
             if maybe is None:
+                # Skip unknowns
                 continue
             items.append(Item(path=str(p), label=class_to_idx[maybe]))
     return items
@@ -368,31 +344,36 @@ def build_dataloaders(
     size: int = 96,
     aug: bool = True,
 ):
-    """Build PyTorch dataloaders for train/val/test based on a split JSON.
+    """Build DataLoaders for train/val/test from a split JSON.
 
-    Returns
-    -------
-    tuple
-        ``(train_loader, val_loader, test_loader, class_names)``, where
-        ``test_loader`` may be ``None`` if no test items are available.
+    Returns:
+        (train_loader, val_loader, test_loader, class_names)
     """
     train_dir = Path(train_dir)
     test_dir = Path(test_dir)
-    with open(Path("data") / "class_indices.json", "r") as f:
-        class_to_idx = json.load(f)
-    class_names = [k for k, _ in sorted(class_to_idx.items(), key=lambda kv: kv[1])]
-
     logger = get_logger(Path("."), name="build_dataloaders")
 
     with open(split_json, "r") as f:
         split_data = json.load(f)
 
+    # Use class names directly from the split file to stay consistent with how it was created
+    if "class_names" not in split_data:
+        raise ValueError(f"split_json file '{split_json}' is missing 'class_names' key!")
+
+    class_names = sorted(split_data["class_names"])
+    class_to_idx = {c: i for i, c in enumerate(class_names)}
+
     train_items = _load_split_items_from_data(split_data, "train", class_to_idx)
     val_items = _load_split_items_from_data(split_data, "val", class_to_idx)
+
+    # Try to load 'test' items from the split file first
     test_items = _load_split_items_from_data(split_data, "test", class_to_idx)
 
     if not test_items:
-        logger.warning("No 'test' items found in split_json. Falling back to loading from test_dir: %s", test_dir)
+        logger.warning(
+            "No 'test' items found in split_json. Falling back to loading from test_dir: %s",
+            test_dir,
+        )
         test_items = _build_test_items(test_dir, class_names)
     else:
         logger.info("Loaded %d 'test' items from split_json.", len(test_items))
@@ -424,18 +405,7 @@ def build_dataloaders(
 
 
 def summarize_class_distribution(split_json: Path) -> Dict[str, Dict[str, int]]:
-    """Summarize per-class counts for train/val/test (if present) from a split JSON.
-
-    Parameters
-    ----------
-    split_json : Path
-        Path to the split JSON file.
-
-    Returns
-    -------
-    dict
-        Mapping of split name to a dict of label -> count.
-    """
+    """Return per-split class counts from a split JSON."""
     with open(split_json, "r") as f:
         data = json.load(f)
 
@@ -443,10 +413,7 @@ def summarize_class_distribution(split_json: Path) -> Dict[str, Dict[str, int]]:
         "train": Counter([rec["label"] for rec in data["train"]]),
         "val": Counter([rec["label"] for rec in data["val"]]),
     }
-    summary = {
-        "train": dict(counts["train"]),
-        "val": dict(counts["val"]),
-    }
+    summary = {"train": dict(counts["train"]), "val": dict(counts["val"])}
 
     if "test" in data and data["test"]:
         counts["test"] = Counter([rec["label"] for rec in data["test"]])
