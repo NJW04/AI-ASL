@@ -3,7 +3,7 @@
 """
 ASL Alphabet dataset utilities:
 - ensure_data: optional Kaggle download and structure validation
-- make_split_lists: stratified train/val split using index files (no moves)
+- make_split_lists: stratified train/val/test split using index files (no moves)
 - build_dataloaders: DataLoaders for train/val/test with torchvision transforms
 """
 from __future__ import annotations
@@ -28,6 +28,7 @@ from .transforms import get_train_transforms, get_eval_transforms
 
 # =========================
 # Inlined utility helpers
+# (No changes in this section)
 # =========================
 
 def ensure_dir(path: Path):
@@ -151,9 +152,11 @@ def ensure_data(root_dir: Path,
     if not train_dir.exists():
         raise FileNotFoundError(f"Training folder not found at {train_dir}. "
                                 "Place dataset under ./data/ or use --use-kaggle.")
+    # --- MODIFICATION: test_dir is no longer required to exist ---
     if not test_dir.exists():
-        raise FileNotFoundError(f"Test folder not found at {test_dir}. "
-                                "Place dataset under ./data/ or use --use-kaggle.")
+        logger.warning("Test folder not found at %s.", test_dir)
+        logger.warning("This is OK, as the test set will be built from the split file.")
+    # --- END MODIFICATION ---
 
     classes = sorted([p.name for p in train_dir.iterdir() if p.is_dir()])
     if len(classes) != 29:
@@ -174,16 +177,20 @@ def _list_images_per_class(train_dir: Path) -> Dict[str, List[Path]]:
     return per_class
 
 
+# --- MODIFICATION: Function updated to create train/val/test splits ---
 def make_split_lists(train_dir: Path,
                      val_ratio: float = 0.1,
+                     test_ratio: float = 0.1, # <-- NEW argument
                      seed: int = 42,
                      subset_per_class: Optional[int] = None) -> Path:
     """
-    Build stratified split lists (train/val) with per-class stratification.
-    Does not move files. Saves to ./splits/asl_val_split_seed{seed}_r{val*100}.json
+    Build stratified split lists (train/val/test) with per-class stratification.
+    Does not move files.
+    Saves to ./splits/asl_split_s{seed}_v{val*100}_t{test*100}.json
 
     If subset_per_class is set, sample up to N examples per class **after**
     stratification (applied independently on train and val).
+    The test set is *never* subsetted.
     """
     train_dir = Path(train_dir)
     assert train_dir.exists(), f"{train_dir} does not exist."
@@ -196,15 +203,23 @@ def make_split_lists(train_dir: Path,
 
     train_list: List[Dict[str, str]] = []
     val_list: List[Dict[str, str]] = []
+    test_list: List[Dict[str, str]] = [] # <-- NEW
 
     for cls in classes:
         imgs = per_class[cls]
         random.shuffle(imgs)
         n = len(imgs)
+        
+        # Calculate split indices
+        n_test = max(1, int(round(n * test_ratio)))
         n_val = max(1, int(round(n * val_ratio)))
-        val_imgs = imgs[:n_val]
-        train_imgs = imgs[n_val:]
 
+        # Carve out the lists
+        test_imgs = imgs[:n_test]
+        val_imgs = imgs[n_test : n_test + n_val]
+        train_imgs = imgs[n_test + n_val :]
+
+        # Handle subsetting (Test set is NEVER subsetted)
         if subset_per_class is not None:
             train_imgs = train_imgs[:subset_per_class]
             val_imgs = val_imgs[:min(len(val_imgs), subset_per_class)]
@@ -213,19 +228,25 @@ def make_split_lists(train_dir: Path,
             train_list.append({"path": str(p), "label": cls})
         for p in val_imgs:
             val_list.append({"path": str(p), "label": cls})
+        for p in test_imgs: # <-- NEW
+            test_list.append({"path": str(p), "label": cls})
 
     split = {
         "seed": seed,
         "val_ratio": val_ratio,
+        "test_ratio": test_ratio, # <-- NEW
         "subset_per_class": subset_per_class,
         "class_names": classes,
         "train": train_list,
         "val": val_list,
+        "test": test_list, # <-- NEW
     }
-    split_path = splits_dir / f"asl_val_split_seed{seed}_r{int(val_ratio*100)}.json"
+    # --- NEW file name ---
+    split_path = splits_dir / f"asl_split_s{seed}_v{int(val_ratio*100)}_t{int(test_ratio*100)}.json"
     with open(split_path, "w") as f:
         json.dump(split, f, indent=2)
     return split_path
+# --- END MODIFICATION ---
 
 
 @dataclass
@@ -252,11 +273,17 @@ class ASLPathsDataset(Dataset):
         return img, it.label, it.path
 
 
-def _load_split_items(split_json: Path, phase: str, class_to_idx: Dict[str, int]) -> List[Item]:
-    with open(split_json, "r") as f:
-        data = json.load(f)
+# --- MODIFICATION: Refactored to load from data, not file ---
+def _load_split_items_from_data(split_data: Dict, phase: str, class_to_idx: Dict[str, int]) -> List[Item]:
+    """
+    Loads a list of Items (path, label_id) from a pre-loaded
+    split dictionary for a given phase ('train', 'val', or 'test').
+    """
     items: List[Item] = []
-    for rec in data[phase]:
+    if phase not in split_data:
+        return [] # Return empty list if phase (e.g., "test") doesn't exist
+        
+    for rec in split_data[phase]:
         p = Path(rec["path"])
         if not p.exists():
             # skip missing
@@ -264,12 +291,14 @@ def _load_split_items(split_json: Path, phase: str, class_to_idx: Dict[str, int]
         label_idx = class_to_idx[rec["label"]]
         items.append(Item(path=str(p), label=label_idx))
     return items
+# --- END MODIFICATION ---
 
 
 def _infer_label_from_name(path: Path, classes: Sequence[str]) -> Optional[str]:
     """
     Best-effort: if test images are single files with class name in the filename,
     try to map. We match by substring against known class names.
+    (Used by _build_test_items fallback)
     """
     name = path.stem.lower()
     for cls in classes:
@@ -285,8 +314,16 @@ def _infer_label_from_name(path: Path, classes: Sequence[str]) -> Optional[str]:
 
 
 def _build_test_items(test_dir: Path, classes: Sequence[str]) -> List[Item]:
+    """
+    Fallback function to load test items from the physical `test_dir`.
+    This is kept for backward compatibility or for cases where
+    no 'test' split is defined in the JSON.
+    """
     class_to_idx = {c: i for i, c in enumerate(classes)}
     items: List[Item] = []
+    if not test_dir.exists():
+        return []
+        
     if any(p.is_dir() for p in test_dir.iterdir()):
         # Foldered test set
         for cdir in sorted([p for p in test_dir.iterdir() if p.is_dir()]):
@@ -324,11 +361,26 @@ def build_dataloaders(train_dir: Path,
         class_to_idx = json.load(f)
     class_names = [k for k, _ in sorted(class_to_idx.items(), key=lambda kv: kv[1])]
 
-    train_items = _load_split_items(split_json, "train", class_to_idx)
-    val_items = _load_split_items(split_json, "val", class_to_idx)
-    test_items = _build_test_items(test_dir, class_names)
-
     logger = get_logger(Path("."), name="build_dataloaders")
+
+    # --- MODIFICATION: Load all splits from the JSON file ---
+    with open(split_json, "r") as f:
+        split_data = json.load(f)
+
+    train_items = _load_split_items_from_data(split_data, "train", class_to_idx)
+    val_items = _load_split_items_from_data(split_data, "val", class_to_idx)
+    
+    # Try to load 'test' items from the split file first
+    test_items = _load_split_items_from_data(split_data, "test", class_to_idx)
+
+    if not test_items:
+        # Fallback if "test" list was missing or empty
+        logger.warning("No 'test' items found in split_json. Falling back to loading from test_dir: %s", test_dir)
+        test_items = _build_test_items(test_dir, class_names)
+    else:
+        logger.info("Loaded %d 'test' items from split_json.", len(test_items))
+    # --- END MODIFICATION ---
+
     logger.info("Dataset sizes: train=%d, val=%d, test=%d", len(train_items), len(val_items), len(test_items))
 
     tr_tfms = get_train_transforms(aug=aug, size=size, normalize="imagenet")
@@ -355,6 +407,20 @@ def build_dataloaders(train_dir: Path,
 def summarize_class_distribution(split_json: Path) -> Dict[str, Dict[str, int]]:
     with open(split_json, "r") as f:
         data = json.load(f)
-    counts = {"train": Counter([rec["label"] for rec in data["train"]]),
-              "val": Counter([rec["label"] for rec in data["val"]])}
-    return {"train": dict(counts["train"]), "val": dict(counts["val"])}
+    
+    # --- MODIFICATION: Add 'test' key if it exists ---
+    counts = {
+        "train": Counter([rec["label"] for rec in data["train"]]),
+        "val": Counter([rec["label"] for rec in data["val"]])
+    }
+    summary = {
+        "train": dict(counts["train"]),
+        "val": dict(counts["val"])
+    }
+    
+    if "test" in data and data["test"]:
+        counts["test"] = Counter([rec["label"] for rec in data["test"]])
+        summary["test"] = dict(counts["test"])
+    
+    return summary
+    # --- END MODIFICATION ---

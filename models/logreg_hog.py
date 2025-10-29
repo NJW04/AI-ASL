@@ -44,6 +44,7 @@ warnings.filterwarnings(
 
 # -----------------
 # Small IO helpers
+# (No changes in this section)
 # -----------------
 def ensure_dir(path: Path):
     Path(path).mkdir(parents=True, exist_ok=True)
@@ -95,6 +96,7 @@ def plot_confusion(y_true: np.ndarray, y_pred: np.ndarray, labels: List[str], ou
 
 # =========================
 # Baseline feature logic
+# (No changes in this section)
 # =========================
 
 def _extract_feature_vec(img_path: str) -> np.ndarray:
@@ -105,16 +107,25 @@ def _extract_feature_vec(img_path: str) -> np.ndarray:
     img = Image.open(img_path).convert("RGB")
     return extract_hog_color(img)
 
+# --- MODIFICATION: Load 'test' list from split file ---
 def _load_split(split_json: Path):
     with open(split_json, "r") as f:
         d = json.load(f)
     class_names = d["class_names"]
     class_to_idx = {c: i for i, c in enumerate(class_names)}
+    
     train = [(rec["path"], class_to_idx[rec["label"]]) for rec in d["train"]]
     val = [(rec["path"], class_to_idx[rec["label"]]) for rec in d["val"]]
-    return train, val, class_names
+    
+    test = []
+    if "test" in d and d["test"]:
+        test = [(rec["path"], class_to_idx[rec["label"]]) for rec in d["test"]]
+        
+    return train, val, test, class_names
+# --- END MODIFICATION ---
 
 def _load_test_items(test_dir: Path, class_names: List[str]):
+    """Fallback for loading from physical test_dir"""
     from data.asl import _build_test_items
     items = _build_test_items(test_dir, class_names)
     return [(it.path, it.label) for it in items]
@@ -159,6 +170,9 @@ def main():
     ap.add_argument("--train-dir", type=Path, default=Path("data/asl_alphabet_train"))
     ap.add_argument("--test-dir", type=Path, default=Path("data/asl_alphabet_test"))
     ap.add_argument("--val-ratio", type=float, default=0.1)
+    # --- MODIFICATION: Added test-ratio to make split call consistent ---
+    ap.add_argument("--test-ratio", type=float, default=0.1)
+    # --- END MODIFICATION ---
     ap.add_argument("--subset-per-class", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--use-kaggle", action="store_true", help="Download via Kaggle API if dataset not present")
@@ -167,7 +181,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=50, help="Number of SGD epochs for the linear baseline")
     ap.add_argument("--lr", type=float, default=0.001, help="SGD learning rate")
     ap.add_argument("--alpha", type=float, default=0.0001, help="L2 regularization strength for SGD")
-    ap.add_argument("--patience", type=int, default=10, help="Epochs to wait for improvement before early stopping")
+    ap.add_argument("--patience", type=int, default=5, help="Epochs to wait for improvement before early stopping")
     
     args = ap.parse_args()
 
@@ -186,15 +200,30 @@ def main():
     
     # Ensure data and split
     train_dir, test_dir = ensure_data(Path("data"), use_kaggle=args.use_kaggle, logger=logger)
+    # --- MODIFICATION: Pass test_ratio to make_split_lists ---
     split_json = make_split_lists(args.train_dir, val_ratio=args.val_ratio,
+                                  test_ratio=args.test_ratio, # <-- Pass arg
                                   seed=args.seed, subset_per_class=args.subset_per_class)
+    # --- END MODIFICATION ---
+    
     dist = summarize_class_distribution(split_json)
     logger.info("Class distribution (train): %s", dist["train"])
     logger.info("Class distribution (val):   %s", dist["val"])
+    # --- MODIFICATION: Log test distribution if it exists ---
+    if "test" in dist:
+        logger.info("Class distribution (test):  %s", dist["test"])
+    # --- END MODIFICATION ---
 
-    # Load split and test
-    train_pairs, val_pairs, class_names = _load_split(split_json)
-    test_pairs = _load_test_items(args.test_dir, class_names)
+    # --- MODIFICATION: Load all splits from JSON, with fallback for test ---
+    train_pairs, val_pairs, test_pairs, class_names = _load_split(split_json)
+    
+    if not test_pairs:
+        logger.warning("No 'test' split found in JSON, falling back to loading from test_dir: %s", args.test_dir)
+        test_pairs = _load_test_items(args.test_dir, class_names)
+    else:
+        logger.info("Loaded %d 'test' items from split_json.", len(test_pairs))
+    # --- END MODIFICATION ---
+    
     write_json({c: i for i, c in enumerate(class_names)}, run_dir / "class_indices.json")
 
     # Define a persistent cache directory
@@ -228,6 +257,7 @@ def main():
 
     # ---
     # 2. MODEL TRAINING (SGD)
+    # (No changes in this section)
     # ---
     log_banner(logger, "2. MODEL TRAINING (SGD)")
 
@@ -290,6 +320,7 @@ def main():
                          epoch, args.epochs, acc_tr, f1_tr, acc_va, f1_va)
         else:
             epochs_no_improve += 1
+            # (Note: This file did not have the 'C.4f' typo, so it's correct)
             logger.info("Epoch %d/%d  train: acc=%.4f f1=%.4f  val: acc=%.4f f1=%.4f  (Patience %d/%d)",
                          epoch, args.epochs, acc_tr, f1_tr, acc_va, f1_va, epochs_no_improve, args.patience)
         
@@ -307,6 +338,7 @@ def main():
 
     # ---
     # 3. FINAL EVALUATION
+    # (No changes in this section)
     # ---
     log_banner(logger, "3. FINAL EVALUATION")
     
@@ -335,6 +367,7 @@ def main():
 
     # ---
     # 4. RUN COMPLETE
+    # (No changes in this section)
     # ---
     log_banner(logger, "RUN COMPLETE")
     
@@ -343,6 +376,7 @@ def main():
         "train_dir": str(args.train_dir),
         "test_dir": str(args.test_dir),
         "val_ratio": args.val_ratio,
+        "test_ratio": args.test_ratio, # <-- Save new param
         "subset_per_class": args.subset_per_class,
         "seed": args.seed,
         "epochs": args.epochs,

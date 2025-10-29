@@ -36,6 +36,7 @@ from models.cnn_small import CNNSmall
 
 # =========================
 # Inlined utility helpers
+# (No changes in this section)
 # =========================
 
 def _ensure_dir(path: Path):
@@ -52,10 +53,6 @@ def _timestamp_slug(slug: str) -> str:
     return f"{ts}__{_slugify(slug)}" if slug else ts
 
 def create_run_dir(artifacts_root: Path, slug: str) -> Path:
-    """
-    Create a timestamped run directory under artifacts_root.
-    Example: artifacts/asl_runs/2025-10-27_14-05-33__eval-checkpoint-abcdef12
-    """
     run_dir = Path(artifacts_root) / _timestamp_slug(slug)
     _ensure_dir(run_dir)
     return run_dir
@@ -67,10 +64,6 @@ def write_json(data: Dict[str, Any], path: Path, indent: int = 2):
         json.dump(data, f, indent=indent)
 
 def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.Logger:
-    """
-    Logger writing to console and <run_dir>/run.log.
-    Prevents duplicate handlers for the same run_dir/name.
-    """
     run_dir = Path(run_dir)
     _ensure_dir(run_dir)
     logger_name = f"{run_dir.resolve()}/{name}"
@@ -79,13 +72,11 @@ def get_logger(run_dir: Path, name: str = "run", level=logging.INFO) -> logging.
     logger.propagate = False
 
     if not logger.handlers:
-        # console
         ch = logging.StreamHandler()
         ch.setLevel(level)
         ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%H:%M:%S"))
         logger.addHandler(ch)
 
-        # file
         fh = logging.FileHandler(run_dir / "run.log", mode="a", encoding="utf-8")
         fh.setLevel(level)
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
@@ -133,15 +124,32 @@ def _infer_model_type(checkpoint_path: Path) -> str:
             try:
                 with open(cp, "r") as f:
                     d = json.load(f)
+                # Check for params dict from optuna, or root level for train.py
+                if "params" in d and "model" in d["params"]:
+                    return d["params"]["model"]
                 if "model" in d:
                     return d["model"]
             except Exception:
                 pass
+    # Fallback if config is missing or doesn't specify model
     return "cnn_small"
 
 
-def _build_model(model_name: str, num_classes: int):
-    return CNNSmall(num_classes=num_classes, base_channels=32, dropout=0.3)
+# --- MODIFICATION: Pass full architecture parameters ---
+def _build_model(model_name: str, num_classes: int, 
+                 num_blocks: int, activation: str, dropout: float):
+    """Builds the CNNSmall model with the *exact* architecture from training."""
+    if model_name != "cnn_small":
+        raise ValueError("Only cnn_small is supported.")
+    
+    return CNNSmall(
+        num_classes=num_classes, 
+        base_channels=32, 
+        dropout=dropout,
+        num_blocks=num_blocks,
+        activation=activation
+    )
+# --- END MODIFICATION ---
 
 
 def _softmax_topk(logits: torch.Tensor, k=3):
@@ -191,7 +199,7 @@ def main():
     ap.add_argument("--checkpoint", type=Path, required=True)
     ap.add_argument("--train-dir", type=Path, default=Path("data/asl_alphabet_train"))
     ap.add_argument("--test-dir", type=Path, default=Path("data/asl_alphabet_test"))
-    ap.add_argument("--size", type=int, default=96)
+    ap.add_argument("--size", type=int, default=96) # Note: This will be overridden by config
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--artifacts-root", type=Path, default=Path("artifacts/asl_runs"))
     args = ap.parse_args()
@@ -200,32 +208,66 @@ def main():
     logger = get_logger(run_dir)
     log_banner(logger, "EVAL")
 
+    # --- MODIFICATION: Load parameters from config.json ---
+    # Load the config.json from the *checkpoint's* directory
+    # This config has the parameters the model was trained with.
+    checkpoint_config_path = args.checkpoint.parent / "config.json"
+    if not checkpoint_config_path.exists():
+        logger.error("FATAL: Cannot find 'config.json' in checkpoint directory: %s", args.checkpoint.parent)
+        logger.error("The config.json is required to know the model architecture (num_blocks, activation, etc.)")
+        return
+    
+    logger.info("Loading training config from: %s", checkpoint_config_path)
+    with open(checkpoint_config_path, "r") as f:
+        cfg = json.load(f)
+
+    # Get parameters from the loaded config, with sensible fallbacks (matching train.py defaults)
+    model_num_blocks = cfg.get("num_blocks", 3)
+    model_activation = cfg.get("activation", "relu")
+    model_dropout = cfg.get("dropout", 0.3)
+    # CRITICAL: Use the 'size' the model was trained on, NOT the default arg
+    data_size = cfg.get("size", args.size) 
+    
+    # Get the path to the split file used during training
+    split_json = None
+    if "split_json" in cfg and Path(cfg["split_json"]).exists():
+        split_json = Path(cfg["split_json"])
+    else:
+        # Fallback to default name if not found or path is broken
+        split_json = Path("splits") / "asl_val_split_seed42_r10.json"
+        logger.warning("Could not find split file from config. Falling back to: %s", split_json)
+    
+    logger.info("Using model params: num_blocks=%d, activation=%s, dropout=%.4f",
+                model_num_blocks, model_activation, model_dropout)
+    logger.info("Using data params: size=%d", data_size)
+    # --- END MODIFICATION ---
+
     # Load class mapping written in data/
     with open(Path("data") / "class_indices.json", "r") as f:
         class_to_idx = json.load(f)
     class_names = [k for k, _ in sorted(class_to_idx.items(), key=lambda kv: kv[1])]
 
+    # [This block from old file is now redundant, handled above]
     # Use split json from sibling config if available
-    cfg_candidates = [args.checkpoint.parent / "config.json"]
-    split_json = None
-    for cp in cfg_candidates:
-        if cp.exists():
-            with open(cp, "r") as f:
-                cfg = json.load(f)
-            if "split_json" in cfg:
-                split_json = Path(cfg["split_json"])
-                break
-    if split_json is None or not split_json.exists():
-        # Fallback to default name
-        split_json = Path("splits") / "asl_val_split_seed42_r10.json"
-
+    # ...
+    
     train_loader, val_loader, test_loader, class_names = build_dataloaders(
         args.train_dir, args.test_dir, split_json, batch_size=64, num_workers=args.num_workers,
-        size=args.size, aug=False
+        size=data_size, aug=False # <-- MODIFIED: Use data_size
     )
 
     model_name = _infer_model_type(args.checkpoint)
-    model = _build_model(model_name, num_classes=len(class_names))
+    
+    # --- MODIFICATION: Pass loaded params to build_model ---
+    model = _build_model(
+        model_name, 
+        num_classes=len(class_names),
+        num_blocks=model_num_blocks,
+        activation=model_activation,
+        dropout=model_dropout
+    )
+    # --- END MODIFICATION ---
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.to(device)

@@ -16,3 +16,37 @@
 2025-10-27 14:35:49 INFO - Dataset sizes: train=8700, val=8700, test=26
 2025-10-27 14:39:57 INFO - Dataset sizes: train=8700, val=8700, test=26
 2025-10-27 19:25:40 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 19:28:25 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 19:40:16 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 19:48:46 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 19:55:55 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:02:42 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:09:41 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:16:11 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:22:03 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:28:51 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:35:27 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:41:24 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:48:18 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:51:22 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 20:56:10 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:02:13 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:08:14 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:14:51 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:21:45 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:28:46 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:35:28 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-27 21:43:11 INFO - Dataset sizes: train=8700, val=8700, test=26
+2025-10-28 15:40:31 INFO - Dataset sizes: train=78300, val=8700, test=26
+2025-10-28 16:08:54 INFO - Dataset sizes: train=78300, val=8700, test=26
+2025-10-28 16:22:30 INFO - Dataset sizes: train=78300, val=8700, test=26
+2025-10-28 17:27:13 INFO - Dataset sizes: train=78300, val=8700, test=26
+2025-10-28 17:32:11 INFO - Dataset sizes: train=78300, val=8700, test=26
+2025-10-28 19:13:43 INFO - Loaded 8700 'test' items from split_json.
+2025-10-28 19:13:43 INFO - Dataset sizes: train=69600, val=8700, test=8700
+2025-10-28 19:51:55 INFO - Loaded 8700 'test' items from split_json.
+2025-10-28 19:51:55 INFO - Dataset sizes: train=69600, val=8700, test=8700
+2025-10-28 20:52:31 INFO - Loaded 8700 'test' items from split_json.
+2025-10-28 20:52:31 INFO - Dataset sizes: train=69600, val=8700, test=8700
+2025-10-28 20:54:39 INFO - Loaded 8700 'test' items from split_json.
+2025-10-28 20:54:39 INFO - Dataset sizes: train=69600, val=8700, test=8700

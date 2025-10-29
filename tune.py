@@ -139,7 +139,7 @@ def main():
         train_args.artifacts_root = Path(args.artifacts_root) / "hp-tuning" # Subdirectory for trial artifacts
         _ensure_dir(train_args.artifacts_root)
         # Set other train_args defaults if needed (e.g., patience, num_workers)
-        # train_args.patience = 5 # Example: If train.py has a default you want to ensure
+        train_args.patience = 3 # Example: If train.py has a default you want to ensure
         # train_args.num_workers = 2 # Example
 
         # Run training and get result

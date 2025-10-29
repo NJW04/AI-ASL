@@ -50,6 +50,7 @@ from models.cnn_small import CNNSmall # Make sure this import is correct
 
 # =========================
 # Inlined utility helpers
+# (No changes in this section)
 # =========================
 
 # ---- io helpers ----
@@ -202,8 +203,11 @@ def run_training(args) -> Dict:
 
     train_dir, test_dir = ensure_data(Path("data"), use_kaggle=args.use_kaggle)
 
+    # --- MODIFICATION: Pass test_ratio to make_split_lists ---
     split_json = make_split_lists(args.train_dir, val_ratio=args.val_ratio,
+                                  test_ratio=args.test_ratio, # <-- Pass arg
                                   seed=args.seed, subset_per_class=args.subset_per_class)
+    # --- END MODIFICATION ---
 
     # --- UPDATED SLUG to potentially include new params ---
     slug_parts = [
@@ -230,6 +234,10 @@ def run_training(args) -> Dict:
     logger.info("Args: %s", vars(args))
     logger.info("Class distribution (train): %s", dist["train"])
     logger.info("Class distribution (val):   %s", dist["val"])
+    # --- MODIFICATION: Log test distribution if it exists ---
+    if "test" in dist:
+        logger.info("Class distribution (test):  %s", dist["test"])
+    # --- END MODIFICATION ---
 
     train_loader, val_loader, test_loader, class_names = build_dataloaders(
         args.train_dir, args.test_dir, split_json, batch_size=args.batch_size,
@@ -349,6 +357,9 @@ def parse_args(args_list=None): # Add args_list=None
     ap.add_argument("--train-dir", type=Path, default=Path("data/asl_alphabet_train"))
     ap.add_argument("--test-dir", type=Path, default=Path("data/asl_alphabet_test"))
     ap.add_argument("--val-ratio", type=float, default=0.1)
+    # --- MODIFICATION: Added test_ratio ---
+    ap.add_argument("--test-ratio", type=float, default=0.1)
+    # --- END MODIFICATION ---
     ap.add_argument("--subset-per-class", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=15)
     ap.add_argument("--batch-size", type=int, default=64)
