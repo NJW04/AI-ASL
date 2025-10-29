@@ -23,7 +23,7 @@ log_files = {
 }
 
 all_dfs = []
-best_epochs = {} # MODIFICATION: Dictionary to store best epoch info
+best_epochs = {}
 try:
     for model_name, file_path in log_files.items():
         df = pd.read_csv(file_path)
@@ -38,13 +38,12 @@ try:
         all_dfs.append(df)
         print(f"Loaded {model_name} log: {len(df)} epochs")
 
-        # --- MODIFICATION: Find and store best epoch ---
+        
         if 'macro_f1_val' in df.columns:
             best_idx = df['macro_f1_val'].idxmax() # Index of the row with max validation F1
             best_epoch_info = df.loc[best_idx]
             best_epochs[model_name] = best_epoch_info # Store the whole row (epoch, scores, etc.)
             print(f"  Best epoch for {model_name}: {int(best_epoch_info['epoch'])} (Val F1: {best_epoch_info['macro_f1_val']:.4f})")
-        # --- END MODIFICATION ---
 
     df_all = pd.concat(all_dfs, ignore_index=True)
 
@@ -74,13 +73,11 @@ for model_name in df_all['model'].unique():
                  linestyle=linestyles['val'], marker=markers['val'],
                  markersize=4, linewidth=2)
 
-        # --- MODIFICATION: Plot the best epoch marker ---
         if model_name in best_epochs:
             best_info = best_epochs[model_name]
             plt.plot(best_info['epoch'], best_info['macro_f1_val'],
                      marker='*', color='red', markersize=12, linestyle='None', # Red star, no line
                      label=f'{model_name} Best Epoch ({int(best_info["epoch"])})' if plt.gca().get_legend() is None else None) # Only add label once
-        # --- END MODIFICATION ---
 
     else:
         print(f"Warning: 'macro_f1_val' column not found for model {model_name}. Skipping F1 plot.")
@@ -128,7 +125,6 @@ for model_name in df_all['model'].unique():
                  linestyle=linestyles['val'], marker=markers['val'],
                  markersize=4, linewidth=2)
 
-        # --- MODIFICATION: Plot the best epoch marker ---
         # Note: We use the epoch determined by *best F1*, but plot the Acc value at that epoch
         if model_name in best_epochs:
             best_info = best_epochs[model_name]
@@ -137,7 +133,6 @@ for model_name in df_all['model'].unique():
             plt.plot(best_info['epoch'], acc_at_best_f1_epoch,
                      marker='*', color='red', markersize=12, linestyle='None', # Red star, no line
                      label=f'{model_name} Best F1 Epoch ({int(best_info["epoch"])})' if plt.gca().get_legend() is None else None) # Only add label once
-        # --- END MODIFICATION ---
 
     else:
          print(f"Warning: 'acc_val' column not found for model {model_name}.")

@@ -1,5 +1,5 @@
 data/asl_alphabet_train/*
-.venv
+/venv
 __pycache__/
 artifacts/
 data/cache/

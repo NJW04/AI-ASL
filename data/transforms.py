@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Image transforms and HOG+color feature extraction utilities."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -13,6 +15,18 @@ from skimage.feature import hog
 
 
 def get_normalize_stats(name: Optional[str] = "imagenet"):
+    """Return (mean, std) for a known normalization preset.
+
+    Parameters
+    ----------
+    name : Optional[str]
+        Preset name. Supported: "imagenet". If None or unknown, returns None.
+
+    Returns
+    -------
+    Optional[tuple[list[float], list[float]]]
+        (mean, std) in RGB order, each in [0, 1], or None if not applicable.
+    """
     if name is None:
         return None
     name = name.lower()
@@ -25,6 +39,22 @@ def get_normalize_stats(name: Optional[str] = "imagenet"):
 
 
 def get_train_transforms(aug: bool = True, size: int = 96, normalize: str = "imagenet"):
+    """Build torchvision transforms for training.
+
+    Parameters
+    ----------
+    aug : bool
+        Whether to include data augmentation.
+    size : int
+        Output crop size (square).
+    normalize : str
+        Normalization preset passed to `get_normalize_stats`.
+
+    Returns
+    -------
+    torchvision.transforms.Compose
+        Composed training transform pipeline.
+    """
     ops = [T.Resize(110)]
     if aug:
         ops.extend([
@@ -43,6 +73,20 @@ def get_train_transforms(aug: bool = True, size: int = 96, normalize: str = "ima
 
 
 def get_eval_transforms(size: int = 96, normalize: str = "imagenet"):
+    """Build torchvision transforms for evaluation/inference.
+
+    Parameters
+    ----------
+    size : int
+        Output crop size (square).
+    normalize : str
+        Normalization preset passed to `get_normalize_stats`.
+
+    Returns
+    -------
+    torchvision.transforms.Compose
+        Composed evaluation transform pipeline.
+    """
     ops = [T.Resize(110), T.CenterCrop(size), T.ToTensor()]
     stats = get_normalize_stats(normalize)
     if stats is not None:
@@ -51,19 +95,31 @@ def get_eval_transforms(size: int = 96, normalize: str = "imagenet"):
 
 
 def extract_hog_color(pil_img: Image.Image) -> np.ndarray:
-    """
-    Extract simple HOG (grayscale) + color histogram (RGB) features.
-    - HOG: orientations=9, pixels_per_cell=(8,8), cells_per_block=(2,2), L2-Hys
-    - Color histogram: 16 bins per channel, range [0,1], concatenated (48 dims)
+    """Extract HOG (on grayscale) + RGB color histogram features.
 
-    Returns:
-      np.ndarray of shape (D,)
+    HOG parameters
+    --------------
+    orientations=9, pixels_per_cell=(16, 16), cells_per_block=(2, 2),
+    block_norm="L2-Hys", feature_vector=True
+
+    Color histogram
+    ---------------
+    16 bins per RGB channel in [0, 1], concatenated (48 dims).
+
+    Parameters
+    ----------
+    pil_img : PIL.Image.Image
+        Input PIL image. Converted to RGB if needed.
+
+    Returns
+    -------
+    numpy.ndarray
+        1D feature vector: `[hog_features, color_hist]`.
     """
     if pil_img.mode != "RGB":
         pil_img = pil_img.convert("RGB")
-    arr = np.asarray(pil_img).astype(np.float32) / 255.0  # (H,W,3)
-    gray = rgb2gray(arr)  # (H,W)
-    # skimage>=0.19 uses channel_axis instead of multichannel. We'll try to be robust:
+    arr = np.asarray(pil_img).astype(np.float32) / 255.0  # (H, W, 3)
+    gray = rgb2gray(arr)  # (H, W)
     hog_vec = hog(
         gray,
         orientations=9,
@@ -72,7 +128,6 @@ def extract_hog_color(pil_img: Image.Image) -> np.ndarray:
         block_norm="L2-Hys",
         feature_vector=True
     )
-    # Color hist per channel
     hist_list = []
     for ch in range(3):
         hist, _ = np.histogram(arr[:, :, ch], bins=16, range=(0.0, 1.0), density=True)

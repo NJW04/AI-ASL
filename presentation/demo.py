@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Run inference on a live webcam feed using TWO trained CNNSmall models.
 Draws a Region of Interest (ROI) box and only predicts the content inside it.
@@ -17,9 +15,8 @@ import cv2  # OpenCV
 from PIL import Image
 
 from data.transforms import get_eval_transforms
-from models.cnn_small import CNNSmall # Assumes cnn_small.py is in models/
+from models.cnn_small import CNNSmall
 
-# --- Helper to load class names (no change) ---
 def load_class_names(class_json_path: Path) -> List[str]:
     """Loads class names, sorting by index."""
     try:
@@ -32,7 +29,6 @@ def load_class_names(class_json_path: Path) -> List[str]:
         print("Please ensure 'class_indices.json' is in your 'data/' folder.")
         return None
 
-# --- Helper to build the model from config (no change) ---
 def load_model_from_checkpoint(checkpoint_path: Path) -> tuple[CNNSmall, int, List[str]]:
     """Loads a model, its config, and class names from a checkpoint path."""
     checkpoint_path = Path(checkpoint_path)
@@ -114,7 +110,6 @@ def main():
     last_pred_aug = "..."
     last_pred_no_aug = "..."
 
-    # --- NEW: Define the Region of Interest (ROI) Box ---
     # Get frame dimensions
     ret, frame = cap.read()
     if not ret:
@@ -131,19 +126,13 @@ def main():
     y1 = (frame_h - box_size) // 2
     x2 = x1 + box_size
     y2 = y1 + box_size
-    # --- END NEW ---
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
             
         frame = cv2.flip(frame, 1) # Flip horizontally
-
-        # --- NEW: Get the cropped frame for inference ---
-        # IMPORTANT: Crop the *original* frame *before* drawing on it
         frame_crop = frame[y1:y2, x1:x2]
-        # --- END NEW ---
 
         # --- Draw UI elements on the display frame ---
         # Draw the ROI box (green)
@@ -166,7 +155,6 @@ def main():
         if key == ord(' '):
             print("Predicting...")
             
-            # --- MODIFICATION: Process the *cropped* frame ---
             rgb_frame = cv2.cvtColor(frame_crop, cv2.COLOR_BGR2RGB) # Use frame_crop
             pil_img = Image.fromarray(rgb_frame)
             img_tensor = transforms(pil_img).unsqueeze(0).to(device)
@@ -189,7 +177,6 @@ def main():
                 
                 last_pred_no_aug = f"{class_names[pred_idx_no_aug]} ({pred_prob_no_aug*100:.1f}%)"
                 print(f"  -> No-Aug Model: {last_pred_no_aug}")
-            # --- END MODIFICATION ---
 
     # Clean up
     cap.release()
